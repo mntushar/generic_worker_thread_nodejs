@@ -255,8 +255,8 @@ export class WorkerPool {
 
   async executeTask<T>(
     func: (...args: any[]) => T | Promise<T>,
-    args: any[] = [],
-    dependencies: Record<string, any> = {}
+    dependencies: Record<string, any> = {},
+    args: any[] = []
   ): Promise<T> {
     try {
       return await this.runTask(func, args, dependencies);
