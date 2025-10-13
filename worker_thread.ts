@@ -1,28 +1,53 @@
 import { Worker } from 'worker_threads';
 import os from 'os';
 
+
 //worker script 
 const workerScript = `
 const { parentPort } = require('worker_threads');
+const os = require('os');
+const MAX_CACHE_SIZE = Math.min(1000, 50 + (os.cpus().length * 8)); // Prevent unbounded growth
+const moduleCache = {};
+const funcCache = new Map(); // Use Map for LRU-friendly operations
+
+function addToCache(cache, key, value) {
+  if (cache.size >= MAX_CACHE_SIZE) {
+    const firstKey = cache.keys().next().value;
+    cache.delete(firstKey); // Simple FIFO eviction
+  }
+  cache.set(key, value);
+}
 
 parentPort.on('message', async (task) => {
-  const { funcString, taskId, args, dependencies = {} } = task;
+  const { funcString, taskId, args, dependencies = {}, modules = {} } = task;
   try {
-    //Create dependency functions from strings
-    const dependencyFuncs = {};
-    for (const [key, value] of Object.entries(dependencies)) {
-      // Evaluate the function string to create actual functions
-      dependencyFuncs[key] = eval('(' + value + ')');
+    const importedModules = {};
+    for (const [key, moduleName] of Object.entries(modules)) {
+      if (!moduleCache[moduleName]) {
+        moduleCache[moduleName] = require(moduleName);
+      }
+      importedModules[key] = moduleCache[moduleName];
     }
     
-    //Inject dependencies into the function scope
-    const dependencyNames = Object.keys(dependencyFuncs);
-    const dependencyValues = Object.values(dependencyFuncs);
+    const dependencyFuncs = {};
+    for (const [key, value] of Object.entries(dependencies)) {
+      if (!funcCache.has(value)) {
+        addToCache(funcCache, value, eval('(' + value + ')'));
+      }
+      dependencyFuncs[key] = funcCache.get(value);
+    }
     
-    //Create the main function with dependencies as parameters
-    const fn = new Function(...dependencyNames, 
-      'return (' + funcString + ')(...arguments);'
-    );
+    const allDependencies = { ...importedModules, ...dependencyFuncs };
+    const dependencyNames = Object.keys(allDependencies);
+    const dependencyValues = Object.values(allDependencies);
+    
+    if (!funcCache.has(funcString)) {
+      const fn = new Function(...dependencyNames, 
+        'return (' + funcString + ')(...arguments);'
+      );
+      addToCache(funcCache, funcString, fn);
+    }
+    const fn = funcCache.get(funcString);
     
     const result = await fn(...dependencyValues, ...args);
     parentPort.postMessage({ taskId, result });
@@ -30,11 +55,6 @@ parentPort.on('message', async (task) => {
     const error = err.stack || err.message || err.toString();
     parentPort.postMessage({ taskId, error });
   }
-});
-
-process.on('uncaughtException', (err) => {
-  const error = err.stack || err.message || err.toString();
-  parentPort.postMessage({ error: \`Uncaught: \${error}\` });
 });
 `;
 
@@ -45,6 +65,7 @@ interface Task<T = any> {
   taskId: number;
   args: any[];
   dependencies?: Record<string, string>;
+  modules?: Record<string, string>;
 }
 
 interface TaskMessage<T = any> {
@@ -139,7 +160,7 @@ export class WorkerPool {
     if (this.taskQueue.length === 0 || this.idleWorkers.length === 0) return;
 
     const worker = this.idleWorkers.shift()!;
-    const { func, resolve, reject, taskId, args, dependencies } = this.taskQueue.shift()!;
+    const { func, resolve, reject, taskId, args, dependencies, modules } = this.taskQueue.shift()!;
 
     this.tasks.set(taskId, { resolve, reject });
     this.activeTasks++;
@@ -149,7 +170,8 @@ export class WorkerPool {
         funcString: func.toString(),
         taskId,
         args,
-        dependencies
+        dependencies,
+        modules
       });
     } catch (err: any) {
       this.idleWorkers.push(worker);
@@ -171,19 +193,38 @@ export class WorkerPool {
       return Promise.reject(new Error('Task must be a function'));
     }
 
-    //Convert dependencies to strings - FIXED: Only convert functions
+    // Separate modules and function dependencies
     const stringDependencies: Record<string, string> = {};
+    const modules: Record<string, string> = {};
+
     for (const [key, value] of Object.entries(dependencies)) {
       if (typeof value === 'function') {
         stringDependencies[key] = value.toString();
+      } else if (typeof value === 'string') {
+        // If it's a string, treat it as a module name
+        modules[key] = value;
+      } else if (typeof value === 'object' && value !== null) {
+        // For objects/modules, user should pass the module name as string
+        throw new Error(
+          `Dependency "${key}" is an object/module. Pass the module name as a string instead. ` +
+          `Example: { ${key}: 'fs' }`
+        );
       } else {
-        throw new Error(`Dependency "${key}" must be a function. Got ${typeof value}`);
+        throw new Error(`Dependency "${key}" must be a function or module name string. Got ${typeof value}`);
       }
     }
 
     return new Promise<T>((resolve, reject) => {
       const taskId = ++this.taskIdCounter;
-      this.taskQueue.push({ func, resolve, reject, taskId, args, dependencies: stringDependencies });
+      this.taskQueue.push({
+        func,
+        resolve,
+        reject,
+        taskId,
+        args,
+        dependencies: stringDependencies,
+        modules
+      });
       this.processQueue();
     });
   }
