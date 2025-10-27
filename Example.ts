@@ -1,61 +1,58 @@
-import { anotherHelper, doSomeThing } from "./dependency";
-import { WorkerPool } from "./worker";
+import { pool } from "./worker/worker_thread.mjs";
 
-// example without dependency
 (async () => {
-    const size = 1e9;
-    const pool = new WorkerPool();
-    const result = await pool.executeTask<number>(
-        (data: number) => {
-            let sum = 0;
-            for (let i = 0; i < data; i++) sum += i;
-            return sum;
-        },
-        {},
-        [size]
-    );
-    console.log("Worker result:", result);
-})();
+  // example for file
+  let resultAdd;
+  const task = { a: 5, b: 5 };
+  resultAdd = await pool.runTaskScriptPath('./addition.mjs', task);
+  console.log(resultAdd);
 
-// example with dependency
-(async () => {
-    const size = 1e9;
-    const pool = new WorkerPool();
-    const result = await pool.executeTask<number>(
-        (doSomeThing, anotherHelper, data) => {
-            let sum = 0;
-            for (let i = 0; i < data; i++) sum += i;
-            const processed = doSomeThing(sum);
-            return anotherHelper(processed);
-        },
-        { doSomeThing, anotherHelper }, // Dependencies to inject
-        [size], // Regular arguments
-    );
 
-    console.log("Worker result:", result);
-})();
+  // example for code execution
+  const codef = (task) => {
+    const results = [];
 
-// example with module dependency
-(async () => {
-    const size = 1e9;
-    const pool = new WorkerPool();
+    function isPrime(n) {
+      if (n < 2) return false;
+      for (let i = 2; i * i <= n; i++) {
+        if (n % i === 0) return false;
+      }
+      return true;
+    }
 
-    const result = await pool.executeTask<number>(
-        (fs, doSomeThing, anotherHelper, data) => {
-            return new Promise((resolve, reject) => {
-                let sum = 0;
-                for (let i = 0; i < data; i++) sum += i;
-                const processed = doSomeThing(sum);
-                sum = anotherHelper(processed);
+    for (let i = 2; i < task.iterations; i++) {
+      if (isPrime(i)) results.push(i);
+    }
 
-                fs.writeFileSync('result.txt', `Worker result: ${sum}\n`, 'utf8');
+    return results.length;
+  };
+  const codes = pool.functionToString(codef, codef.name);
+  resultAdd = await pool.runTaskScriptCode(codes, { iterations: 5_000_000 });
+  console.log(resultAdd);
 
-                resolve(sum);
-            });
-        },
-        { fs: 'fs', doSomeThing, anotherHelper }, // Dependencies to inject
-        [size], // Regular arguments
-    );
+    
+  // example for code execution with dependency
+  const codefd = (data, dependencies) => {
+    const results = [];
 
-    console.log("Worker result:", result);
+    function isPrime(n) {
+      if (n < 2) return false;
+      for (let i = 2; i * i <= n; i++) {
+        if (n % i === 0) return false;
+      }
+      return true;
+    }
+
+    for (let i = 2; i < task.iterations; i++) {
+      if (isPrime(i)) results.push(i);
+    }
+
+    const aTask = { a: results.length, b: 5 };
+    return dependencies['addition'].default(aTask);
+  };
+  const codesd = pool.functionToString(codefd, codefd.name);
+  const iterations = 5_000_000;
+  const data = { iterations, dependencyPaths: ['./addition.mjs'] };
+  resultAdd = await pool.runTaskScriptCode(codesd, data);
+  console.log(resultAdd);
 })();
