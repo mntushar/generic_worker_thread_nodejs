@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { parentPort } from 'node:worker_threads';
 import { pathToFileURL } from 'node:url';
 import path from 'path';
@@ -52,7 +53,15 @@ parentPort.on('message', async ({ scriptPath, scriptCode, task }) => {
       throw new Error('Neither scriptPath nor scriptCode provided');
     }
 
-    parentPort.postMessage(result);
+    if (result && typeof result.on === 'function') {
+      result.on('data', (chunk) => parentPort.postMessage({ chunk }));
+      result.on('end', () => parentPort.postMessage({ end: true }));
+      result.on('error', (err) => parentPort.postMessage({ error: err.message }));
+      result.end?.();
+    } else {
+      parentPort.postMessage({ result });
+    }
+
   } catch (err) {
     parentPort.postMessage({ error: err.message });
   }
