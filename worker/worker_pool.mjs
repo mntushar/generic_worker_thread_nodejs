@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { AsyncResource } from 'node:async_hooks';
 import { EventEmitter } from 'node:events';
 import { Worker } from 'node:worker_threads';
@@ -57,10 +58,26 @@ export default class WorkerPool extends EventEmitter {
       // In case of success: Call the callback that was passed to `runTask`,
       // remove the `TaskInfo` associated with the Worker, and mark it as free
       // again.
-      worker[kTaskInfo].done(null, result);
-      worker[kTaskInfo] = null;
-      this.#freeWorkers.push(worker);
-      this.emit(kWorkerFreedEvent);
+      if (result.chunk) {
+        this.emit('stream-chunk', result.chunk, worker);
+      } else if (result.end) {
+        if (worker[kTaskInfo]) worker[kTaskInfo].done(null, null);
+        worker[kTaskInfo] = null;
+        this.#freeWorkers.push(worker);
+        this.emit(kWorkerFreedEvent, worker);
+        this.emit('stream-task-ended', worker);
+      } else if (result.error) {
+        if (worker[kTaskInfo]) worker[kTaskInfo].done(new Error(result.error), null);
+        worker[kTaskInfo] = null;
+        this.#workers.splice(this.#workers.indexOf(worker), 1);
+        this.#addNewWorker();
+      } else {
+        if (worker[kTaskInfo]) worker[kTaskInfo].done(null, result.result);
+        worker[kTaskInfo] = null;
+        this.#freeWorkers.push(worker);
+        this.emit(kWorkerFreedEvent, worker);
+      }
+
     });
 
     worker.on('error', (err) => {
